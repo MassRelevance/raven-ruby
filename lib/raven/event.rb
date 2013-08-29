@@ -131,7 +131,8 @@ module Raven
 
       context_lines = configuration[:context_lines]
 
-      new(options) do |evt|
+      opts = exc.respond_to?(:extra) ? {:extra => exc.extra} : nil
+      new(options, opts) do |evt|
         evt.message = "#{exc.class.to_s}: #{exc.message}"
         evt.level = options[:level] || :error
         evt.parse_exception(exc)
