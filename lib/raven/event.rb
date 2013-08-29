@@ -134,7 +134,7 @@ module Raven
       extra = options[:extra] || {}
       options[:extra] = extra.merge(exc.extra) if exc.respond_to?(:extra)
 
-      new(options, opts) do |evt|
+      new(options) do |evt|
         evt.message = "#{exc.class.to_s}: #{exc.message}"
         evt.level = options[:level] || :error
         evt.parse_exception(exc)
