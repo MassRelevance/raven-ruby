@@ -132,7 +132,7 @@ module Raven
       context_lines = configuration[:context_lines]
 
       extra = options[:extra] || {}
-      options[:extra] = extra.merge(exc.extra) if exc.respond_to?(:extra)
+      options[:extra] = extra.merge(exc.extra) if exc.respond_to?(:extra) rescue extra
 
       new(options) do |evt|
         evt.message = "#{exc.class.to_s}: #{exc.message}"
