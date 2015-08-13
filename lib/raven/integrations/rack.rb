@@ -22,7 +22,11 @@ module Raven
   # Use a standard Raven.configure call to configure your server credentials.
   class Rack
 
+    WHITEHAT = /WhiteHat Security/
+
     def self.capture_type(exception, env, options = {})
+      return if env['HTTP_USER_AGENT'] =~ WHITEHAT
+
       if env['raven.requested_at']
         options[:time_spent] = Time.now - env['raven.requested_at']
       end
