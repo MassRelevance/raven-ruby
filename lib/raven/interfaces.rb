@@ -1,25 +1,22 @@
-require 'hashie'
-
 module Raven
 
   INTERFACES = {}
 
-  class Interface < Hashie::Dash
-    def initialize(attributes={}, &block)
-      @check_required = false
-      super(attributes)
-      block.call(self) if block
-      @check_required = true
-      assert_required_properties_set!
+  class Interface
+    def initialize(attributes = nil)
+      attributes.each do |attr, value|
+        public_send "#{attr}=", value
+      end if attributes
+
+      yield self if block_given?
     end
 
-    def assert_required_properties_set!
-      super if @check_required
+    def self.name(value = nil)
+      @interface_name ||= value
     end
 
-    def self.name(value=nil)
-      @interface_name = value if value
-      @interface_name
+    def to_hash
+      Hash[instance_variables.map { |name| [name[1..-1].to_sym, instance_variable_get(name)] } ]
     end
   end
 
@@ -33,5 +30,4 @@ module Raven
   def self.find_interface(name)
     INTERFACES[name.to_s]
   end
-
 end

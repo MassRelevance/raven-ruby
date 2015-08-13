@@ -2,7 +2,7 @@ require 'rake'
 require 'raven'
 require 'rubygems/package_task'
 
-gemspec = eval(IO.read('sentry-raven.gemspec'))
+gemspec = Gem::Specification.load(Dir['*.gemspec'].first)
 
 Gem::PackageTask.new(gemspec).define
 
@@ -15,7 +15,7 @@ begin
 
 rescue LoadError
   task :spec do
-    abort "Rspec is not available. (sudo) bundle install to run unit tests"
+    abort "Rspec is not available. bundle install to run unit tests"
   end
 end
 

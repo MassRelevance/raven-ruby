@@ -1,12 +1,11 @@
 require 'raven/interfaces'
 
 module Raven
-
   class MessageInterface < Interface
 
     name 'sentry.interfaces.Message'
-    property :message, :required => true
-    property :params
+    attr_accessor :message
+    attr_accessor :params
 
     def initialize(*arguments)
       self.params = []
@@ -15,5 +14,4 @@ module Raven
   end
 
   register_interface :message => MessageInterface
-
 end

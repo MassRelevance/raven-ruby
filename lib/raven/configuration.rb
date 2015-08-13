@@ -1,4 +1,5 @@
 require 'logger'
+require 'uri'
 
 module Raven
   class Configuration
@@ -30,6 +31,9 @@ module Raven
     # Logger to use internally
     attr_accessor :logger
 
+    # Silence ready message
+    attr_accessor :silence_ready
+
     # Number of lines of code context to capture, or nil for none
     attr_accessor :context_lines
 
@@ -54,8 +58,14 @@ module Raven
     # Should the SSL certificate of the server be verified?
     attr_accessor :ssl_verification
 
-    # Ssl settings passed direactly to faraday's ssl option
+    # The path to the SSL certificate file
+    attr_accessor :ssl_ca_file
+
+    # SSl settings passed direactly to faraday's ssl option
     attr_accessor :ssl
+
+    # Proxy information to pass to the HTTP adapter
+    attr_accessor :proxy
 
     attr_reader :current_environment
 
@@ -64,11 +74,32 @@ module Raven
 
     attr_accessor :server_name
 
+    attr_accessor :release
+
     # DEPRECATED: This option is now ignored as we use our own adapter.
     attr_accessor :json_adapter
 
-    # Default tags for events 
+    # Default tags for events
     attr_accessor :tags
+
+    # Optional Proc to be used to send events asynchronously.
+    attr_reader :async
+
+    # Exceptions from these directories to be ignored
+    attr_accessor :app_dirs_pattern
+
+    # Catch exceptions before they're been processed by
+    # ActionDispatch::ShowExceptions or ActionDispatch::DebugExceptions
+    attr_accessor :catch_debugged_exceptions
+
+    # Provide a configurable callback to determine event capture
+    attr_accessor :should_capture
+
+    # additional fields to sanitize
+    attr_accessor :sanitize_fields
+
+    # Sanitize values that look like credit card numbers
+    attr_accessor :sanitize_credit_cards
 
     IGNORE_DEFAULT = ['ActiveRecord::RecordNotFound',
                       'ActionController::RoutingError',
@@ -84,16 +115,22 @@ module Raven
       self.current_environment = ENV['RAILS_ENV'] || ENV['RACK_ENV'] || 'default'
       self.send_modules = true
       self.excluded_exceptions = IGNORE_DEFAULT
-      self.processors = [Raven::Processor::SanitizeData]
-      self.ssl_verification = false
-      self.encoding = 'json'
+      self.processors = [Raven::Processor::RemoveCircularReferences, Raven::Processor::UTF8Conversion, Raven::Processor::SanitizeData]
+      self.ssl_verification = true
+      self.encoding = 'gzip'
       self.timeout = 1
       self.open_timeout = 1
+      self.proxy = nil
       self.tags = {}
+      self.async = false
+      self.catch_debugged_exceptions = true
+      self.sanitize_fields = []
+      self.sanitize_credit_cards = true
+      self.environments = []
     end
 
     def server=(value)
-      uri = URI::parse(value)
+      uri = URI.parse(value)
       uri_path = uri.path.split('/')
 
       if uri.user
@@ -110,7 +147,7 @@ module Raven
 
       # For anyone who wants to read the base server string
       @server = "#{@scheme}://#{@host}"
-      @server << ":#{@port}" unless @port == {'http'=>80,'https'=>443}[@scheme]
+      @server << ":#{@port}" unless @port == { 'http' => 80, 'https' => 443 }[@scheme]
       @server << @path
     end
 
@@ -120,6 +157,13 @@ module Raven
     end
 
     alias_method :dsn=, :server=
+
+    def async=(value)
+      raise ArgumentError.new("async must be callable (or false to disable)") unless (value == false || value.respond_to?(:call))
+      @async = value
+    end
+
+    alias_method :async?, :async
 
     # Allows config options to be read like a hash
     #
@@ -133,12 +177,18 @@ module Raven
     end
 
     def send_in_current_environment?
-      if environments
-        environments.include?(current_environment)
-      else
-        !%w[test cucumber development].include?(current_environment)
-      end
+      !!server && (environments.empty? || environments.include?(current_environment))
     end
 
+    def log_excluded_environment_message
+      Raven.logger.debug "Event not sent due to excluded environment: #{current_environment}"
+    end
+
+    def verify!
+      raise Error.new('No server specified') unless server
+      raise Error.new('No public key specified') unless public_key
+      raise Error.new('No secret key specified') unless secret_key
+      raise Error.new('No project ID specified') unless project_id
+    end
   end
 end

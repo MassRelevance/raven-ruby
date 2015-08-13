@@ -1,5 +1,4 @@
-require File::expand_path('../../spec_helper', __FILE__)
-require 'raven'
+require 'spec_helper'
 
 describe Raven::Configuration do
   before do
@@ -10,38 +9,60 @@ describe Raven::Configuration do
   end
 
   shared_examples 'a complete configuration' do
-
-
     it 'should have a server' do
-      subject[:server].should == 'http://sentry.localdomain/sentry'
+      expect(subject[:server]).to eq('http://sentry.localdomain/sentry')
     end
 
     it 'should have a scheme' do
-      subject[:scheme].should == 'http'
+      expect(subject[:scheme]).to eq('http')
     end
 
     it 'should have a public key' do
-      subject[:public_key].should == '12345'
+      expect(subject[:public_key]).to eq('12345')
     end
 
     it 'should have a secret key' do
-      subject[:secret_key].should == '67890'
+      expect(subject[:secret_key]).to eq('67890')
     end
 
     it 'should have a host' do
-      subject[:host].should == 'sentry.localdomain'
+      expect(subject[:host]).to eq('sentry.localdomain')
     end
 
     it 'should have a port' do
-      subject[:port].should == 80
+      expect(subject[:port]).to eq(80)
     end
 
     it 'should have a path' do
-      subject[:path].should == '/sentry'
+      expect(subject[:path]).to eq('/sentry')
     end
 
     it 'should have a project ID' do
-      subject[:project_id].should == '42'
+      expect(subject[:project_id]).to eq('42')
+    end
+
+    it 'should not be async' do
+      expect(subject[:async]).to eq(false)
+      expect(subject[:async?]).to eq(false)
+    end
+
+    it 'should catch_debugged_exceptions' do
+      expect(subject[:catch_debugged_exceptions]).to eq(true)
+    end
+
+    it 'should have no sanitize fields' do
+      expect(subject[:sanitize_fields]).to eq([])
+    end
+  end
+
+  context 'being initialized without server configuration' do
+    before do
+      subject.environments = %w[ test ]
+    end
+
+    it 'should not send events' do
+      expect(subject[:server]).to eq(nil)
+      expect(subject.send_in_current_environment?).to eq(false)
     end
   end
 
@@ -77,36 +98,48 @@ describe Raven::Configuration do
     it_should_behave_like 'a complete configuration'
   end
 
-  context 'being initialized in a non-test environment' do
-    it 'should send events' do
-      subject.send_in_current_environment?.should be_true
+  context 'configuring for async' do
+    it 'should be configurable to send events async' do
+      subject.async = lambda { |_e| :ok }
+      expect(subject.async.respond_to?(:call)).to eq(true)
+      expect(subject.async.call('event')).to eq(:ok)
+    end
+
+    it 'should raise when setting async to anything other than callable or false' do
+      expect { subject.async = Proc.new {} }.to_not raise_error
+      expect { subject.async = lambda {} }.to_not raise_error
+      expect { subject.async = false }.to_not raise_error
+      expect { subject.async = true }.to raise_error(ArgumentError)
     end
   end
 
-  context 'being initialized in a test environment' do
+  context 'being initialized with a current environment' do
     before(:each) do
       subject.current_environment = 'test'
-    end
-
-    it 'should not send events' do
-      subject.send_in_current_environment?.should be_false
+      subject.server = 'http://sentry.localdomain/sentry'
     end
 
     it 'should send events if test is whitelisted' do
       subject.environments = %w[ test ]
-      subject.send_in_current_environment?.should be_true
+      expect(subject.send_in_current_environment?).to eq(true)
     end
 
-    it 'should not send events in a cucumber environment' do
-      subject.current_environment = 'cucumber'
-      subject.send_in_current_environment?.should be_false
+    it 'should not send events if test is not whitelisted' do
+      subject.environments = %w[ not_test ]
+      expect(subject.send_in_current_environment?).to eq(false)
     end
   end
 
-  context 'being initialized in a development environment' do
-    it 'should not send events' do
-      subject.current_environment = 'development'
-      subject.send_in_current_environment?.should be_false
+  context 'configuration for sanitize fields' do
+    it 'should union default sanitize fields with user-defined sanitize fields' do
+      fields = Raven::Processor::SanitizeData::DEFAULT_FIELDS | %w(test monkeybutt)
+
+      subject.sanitize_fields = fields
+      client = Raven::Client.new(subject)
+      processor = Raven::Processor::SanitizeData.new(client)
+
+      expect(processor.send(:fields_re)).to eq(/(#{fields.join('|')})/i)
     end
   end
+
 end

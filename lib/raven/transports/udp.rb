@@ -4,13 +4,16 @@ require 'raven/transports'
 require 'raven/error'
 
 module Raven
-
   module Transports
-
     class UDP < Transport
+      def send_event(auth_header, data, _options = {})
+        conn.send "#{auth_header}\n\n#{data}", 0
+      end
 
       def send(auth_header, data, options = {})
-        conn.send "#{auth_header}\n\n#{data}", 0
+        Raven.logger.warn "DEPRECATION WARNING: Calling #send on a Transport will be \
+          removed in Raven-Ruby 0.14! Use #send_event instead!"
+        send_event(auth_header, data, options)
       end
 
     private
@@ -27,9 +30,6 @@ module Raven
         super
         raise Error.new('No port specified') unless self.configuration.port
       end
-
     end
-
   end
-
 end

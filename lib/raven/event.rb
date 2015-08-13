@@ -1,6 +1,7 @@
 require 'rubygems'
 require 'socket'
-require 'uuidtools'
+require 'securerandom'
+require 'digest/md5'
 
 require 'raven/error'
 require 'raven/linecache'
@@ -23,65 +24,62 @@ module Raven
     PLATFORM = "ruby"
 
     attr_reader :id
-    attr_accessor :project, :message, :timestamp, :level
-    attr_accessor :logger, :culprit, :server_name, :modules, :extra, :tags
+    attr_accessor :project, :message, :timestamp, :time_spent, :level, :logger,
+      :culprit, :server_name, :release, :modules, :extra, :tags, :context, :configuration,
+      :checksum
 
-    def initialize(options={}, &block)
-      @configuration = options[:configuration] || Raven.configuration
-      @interfaces = {}
+    def initialize(init = {})
+      @configuration = Raven.configuration
+      @interfaces    = {}
+      @context       = Raven.context
+      @id            = generate_event_id
+      @message       = nil
+      @timestamp     = Time.now.utc
+      @time_spent    = nil
+      @level         = :error
+      @logger        = 'root'
+      @culprit       = nil
+      @server_name   = @configuration.server_name || get_hostname
+      @release       = @configuration.release
+      @modules       = get_modules if @configuration.send_modules
+      @user          = {}
+      @extra         = {}
+      @tags          = {}
+      @checksum      = nil
 
-      context = options[:context] || Raven.context
+      yield self if block_given?
 
-      @id = options[:id] || UUIDTools::UUID.random_create.hexdigest
-      @message = options[:message]
-      @timestamp = options[:timestamp] || Time.now.utc
-
-      @level = options[:level] || :error
-      @logger = options[:logger] || 'root'
-      @culprit = options[:culprit]
-      @server_name = options[:server_name] || @configuration.server_name || get_hostname
-
-      if @configuration.send_modules
-        options[:modules] ||= get_modules
-      end
-      @modules = options[:modules]
-
-      @user = options[:user] || {}
-      @user.merge!(context.user)
-
-      @extra = options[:extra] || {}
-      @extra.merge!(context.extra)
-
-      @tags = @configuration.tags
-      @tags.merge!(options[:tags] || {})
-      @tags.merge!(context.tags)
-
-      block.call(self) if block
-
-      if !self[:http] && context.rack_env
-        self.interface :http do |int|
-          int.from_rack(context.rack_env)
+      if !self[:http] && @context.rack_env
+        interface :http do |int|
+          int.from_rack(@context.rack_env)
         end
       end
 
+      init.each_pair  { |key, val| instance_variable_set('@' + key.to_s, val) }
+
+      @user = @context.user.merge(@user)
+      @extra = @context.extra.merge(@extra)
+      @tags = @configuration.tags.merge(@context.tags).merge(@tags)
+
       # Some type coercion
-      @timestamp = @timestamp.strftime('%Y-%m-%dT%H:%M:%S') if @timestamp.is_a?(Time)
-      @level = LOG_LEVELS[@level.to_s.downcase] if @level.is_a?(String) || @level.is_a?(Symbol)
+      @timestamp  = @timestamp.strftime('%Y-%m-%dT%H:%M:%S') if @timestamp.is_a?(Time)
+      @time_spent = (@time_spent*1000).to_i if @time_spent.is_a?(Float)
+      @level      = LOG_LEVELS[@level.to_s.downcase] if @level.is_a?(String) || @level.is_a?(Symbol)
     end
 
     def get_hostname
       # Try to resolve the hostname to an FQDN, but fall back to whatever the load name is
       hostname = Socket.gethostname
-      hostname = Socket.gethostbyname(hostname).first rescue hostname
+      Socket.gethostbyname(hostname).first rescue hostname
     end
 
     def get_modules
       # Older versions of Rubygems don't support iterating over all specs
-      Hash[Gem::Specification.map {|spec| [spec.name, spec.version.to_s]}] if Gem::Specification.respond_to?(:map)
+      Hash[Gem::Specification.map { |spec| [spec.name, spec.version.to_s] }] if Gem::Specification.respond_to?(:map)
     end
 
-    def interface(name, value=nil, &block)
-      int = Raven::find_interface(name)
+    def interface(name, value = nil, &block)
+      int = Raven.find_interface(name)
       raise Error.new("Unknown interface: #{name}") unless int
       @interfaces[int.name] = int.new(value, &block) if value || block
       @interfaces[int.name]
@@ -97,27 +95,33 @@ module Raven
 
     def to_hash
       data = {
-        'event_id' => @id,
-        'message' => @message,
-        'timestamp' => @timestamp,
-        'level' => @level,
-        'project' => @project,
-        'logger' => @logger,
-        'platform' => PLATFORM,
+        :event_id => @id,
+        :message => @message,
+        :timestamp => @timestamp,
+        :time_spent => @time_spent,
+        :level => @level,
+        :project => @project,
+        :logger => @logger,
+        :platform => PLATFORM,
       }
-      data['culprit'] = @culprit if @culprit
-      data['server_name'] = @server_name if @server_name
-      data['modules'] = @modules if @modules
-      data['extra'] = @extra if @extra
-      data['tags'] = @tags if @tags
-      data['sentry.interfaces.User'] = @user if @user
+      data[:culprit] = @culprit if @culprit
+      data[:server_name] = @server_name if @server_name
+      data[:release] = @release if @release
+      data[:modules] = @modules if @modules
+      data[:extra] = @extra if @extra
+      data[:tags] = @tags if @tags
+      data[:user] = @user if @user
+      data[:checksum] = @checksum if @checksum
       @interfaces.each_pair do |name, int_data|
-        data[name] = int_data.to_hash
+        data[name.to_sym] = int_data.to_hash
       end
       data
     end
 
-    def self.from_exception(exc, options={}, &block)
+    def self.from_exception(exc, options = {}, &block)
+      notes = exc.instance_variable_get(:@__raven_context) || {}
+      options = notes.merge(options)
+
       configuration = options[:configuration] || Raven.configuration
       if exc.is_a?(Raven::Error)
         # Try to prevent error reporting loops
@@ -135,63 +139,93 @@ module Raven
       options[:extra] = extra.merge(exc.extra) if exc.respond_to?(:extra) rescue extra
 
       new(options) do |evt|
-        evt.message = "#{exc.class.to_s}: #{exc.message}"
+        evt.configuration = configuration
+        evt.message = "#{exc.class}: #{exc.message}"
         evt.level = options[:level] || :error
-        evt.parse_exception(exc)
-        if (exc.backtrace)
-          evt.interface :stack_trace do |int|
-            backtrace = Backtrace.parse(exc.backtrace)
-            int.frames = backtrace.lines.reverse.map { |line|
-              int.frame do |frame|
-                frame.abs_path = line.file
-                frame.function = line.method
-                frame.lineno = line.number
-                frame.in_app = line.in_app
-                if context_lines and frame.abs_path
-                  frame.pre_context, frame.context_line, frame.post_context = \
-                    evt.get_file_context(frame.abs_path, frame.lineno, context_lines)
-                end
-              end
-            }.select{ |f| f.filename }
-            evt.culprit = evt.get_culprit(int.frames)
-          end
-        end
+
+        add_exception_interface(evt, exc)
+
         block.call(evt) if block
       end
     end
 
-    def self.from_message(message, options={})
+    def self.from_message(message, options = {})
+      configuration = options[:configuration] || Raven.configuration
       new(options) do |evt|
+        evt.configuration = configuration
         evt.message = message
         evt.level = options[:level] || :error
         evt.interface :message do |int|
           int.message = message
         end
+        if options[:backtrace]
+          evt.interface(:stacktrace) do |int|
+            stacktrace_interface_from(int, evt, options[:backtrace])
+          end
+        end
       end
+    end
+
+    def self.add_exception_interface(evt, exc)
+      evt.interface(:exception) do |exc_int|
+        exceptions = [exc]
+        while exc.respond_to?(:cause) && exc.cause
+          exceptions << exc.cause
+          exc = exc.cause
+        end
+        exceptions.reverse!
+
+        exc_int.values = exceptions.map do |exc|
+          SingleExceptionInterface.new do |int|
+            int.type = exc.class.to_s
+            int.value = exc.to_s
+            int.module = exc.class.to_s.split('::')[0...-1].join('::')
+
+            int.stacktrace = if exc.backtrace
+              StacktraceInterface.new do |stacktrace|
+                stacktrace_interface_from(stacktrace, evt, exc.backtrace)
+              end
+            end
+          end
+        end
+      end
+    end
+
+    def self.stacktrace_interface_from(int, evt, backtrace)
+      backtrace = Backtrace.parse(backtrace)
+      int.frames = backtrace.lines.reverse.map do |line|
+        StacktraceInterface::Frame.new.tap do |frame|
+          frame.abs_path = line.file if line.file
+          frame.function = line.method if line.method
+          frame.lineno = line.number
+          frame.in_app = line.in_app
+          frame.module = line.module_name if line.module_name
+
+          if evt.configuration[:context_lines] && frame.abs_path
+            frame.pre_context, frame.context_line, frame.post_context = \
+              evt.get_file_context(frame.abs_path, frame.lineno, evt.configuration[:context_lines])
+          end
+        end
+      end.select { |f| f.filename }
+
+      evt.culprit = evt.get_culprit(int.frames)
     end
 
     # Because linecache can go to hell
-    def self._source_lines(path, from, to)
+    def self._source_lines(_path, _from, _to)
     end
 
     def get_file_context(filename, lineno, context)
+      return nil, nil, nil unless Raven::LineCache.is_valid_file(filename)
       lines = (2 * context + 1).times.map do |i|
-        Raven::LineCache::getline(filename, lineno - context + i)
+        Raven::LineCache.getline(filename, lineno - context + i)
       end
-      [lines[0..(context-1)], lines[context], lines[(context+1)..-1]]
+      [lines[0..(context - 1)], lines[context], lines[(context + 1)..-1]]
     end
 
     def get_culprit(frames)
-      lastframe = frames.reverse.detect { |f| f.in_app } || frames.last
+      lastframe = frames.reverse.find { |f| f.in_app } || frames.last
       "#{lastframe.filename} in #{lastframe.function} at line #{lastframe.lineno}" if lastframe
-    end
-
-    def parse_exception(exception)
-      interface(:exception) do |int|
-        int.type = exception.class.to_s
-        int.value = exception.message
-        int.module = exception.class.to_s.split('::')[0...-1].join('::')
-      end
     end
 
     # For cross-language compat
@@ -203,5 +237,15 @@ module Raven
     end
 
     private
+
+    def generate_event_id
+      # generate a uuid. copy-pasted from SecureRandom, this method is not
+      # available in <1.9.
+      ary = SecureRandom.random_bytes(16).unpack("NnnnnN")
+      ary[2] = (ary[2] & 0x0fff) | 0x4000
+      ary[3] = (ary[3] & 0x3fff) | 0x8000
+      uuid = "%08x-%04x-%04x-%04x-%04x%08x" % ary
+      ::Digest::MD5.hexdigest(uuid)
+    end
   end
 end

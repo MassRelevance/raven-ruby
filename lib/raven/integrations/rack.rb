@@ -1,3 +1,6 @@
+require 'time'
+require 'rack'
+
 module Raven
   # Middleware for Rack applications. Any errors raised by the upstream
   # application will be delivered to Sentry and re-raised.
@@ -18,20 +21,20 @@ module Raven
   #
   # Use a standard Raven.configure call to configure your server credentials.
   class Rack
-    def self.capture_exception(exception, env, options = {})
-      Raven.capture_exception(exception, options) do |evt|
+
+    def self.capture_type(exception, env, options = {})
+      if env['raven.requested_at']
+        options[:time_spent] = Time.now - env['raven.requested_at']
+      end
+      Raven.capture_type(exception, options) do |evt|
         evt.interface :http do |int|
           int.from_rack(env)
         end
       end
     end
-
-    def self.capture_message(message, env, options = {})
-      Raven.capture_message(message, options) do |evt|
-        evt.interface :http do |int|
-          int.from_rack(env)
-        end
-      end
+    class << self
+      alias_method :capture_message, :capture_type
+      alias_method :capture_exception, :capture_type
     end
 
     def initialize(app)
@@ -39,26 +42,27 @@ module Raven
     end
 
     def call(env)
+      # clear context at the beginning of the request to ensure a clean slate
+      Context.clear!
+
       # store the current environment in our local context for arbitrary
       # callers
+      env['raven.requested_at'] = Time.now
       Raven.rack_context(env)
 
       begin
         response = @app.call(env)
-      rescue Error => e
+      rescue Error
         raise # Don't capture Raven errors
       rescue Exception => e
+        Raven.logger.debug "Collecting %p: %s" % [ e.class, e.message ]
         Raven::Rack.capture_exception(e, env)
         raise
-      ensure
-        Context.clear!
       end
 
       error = env['rack.exception'] || env['sinatra.error']
 
-      if error
-        Raven::Rack.capture_exception(error, env)
-      end
+      Raven::Rack.capture_exception(error, env) if error
 
       response
     end

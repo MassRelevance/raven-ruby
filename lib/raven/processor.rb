@@ -1,15 +1,11 @@
 module Raven
+  class Processor
+    def initialize(client)
+      @client = client
+    end
 
-  module Processor
-    class Processor
-      def initialize(client)
-        @client = client
-      end
-
-      def process(data)
-        data
-      end
+    def process(data)
+      raise NotImplementedError
     end
   end
-
 end
