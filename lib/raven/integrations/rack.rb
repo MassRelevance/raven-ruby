@@ -26,6 +26,7 @@ module Raven
 
     def self.capture_type(exception, env, options = {})
       return if env['HTTP_USER_AGENT'] =~ WHITEHAT
+      return if exception.respond_to?(:sentry?) && !exception.sentry?
 
       if env['raven.requested_at']
         options[:time_spent] = Time.now - env['raven.requested_at']
